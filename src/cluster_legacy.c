@@ -1192,6 +1192,35 @@ void clusterInitLast(void) {
 
 /* Called when a cluster node receives SHUTDOWN. */
 void clusterHandleServerShutdown(void) {
+    if (server.auto_failover_on_shutdown) {
+        /* Find the first best replica, that is, the replica with the largest offset. */
+        client *best_replica = NULL;
+        listIter replicas_iter;
+        listNode *replicas_list_node;
+        listRewind(server.replicas, &replicas_iter);
+        while ((replicas_list_node = listNext(&replicas_iter)) != NULL) {
+            client *replica = listNodeValue(replicas_list_node);
+            /* This is done only when the replica offset is caught up, to avoid data loss */
+            if (replica->repl_state == REPLICA_STATE_ONLINE && replica->repl_ack_off == server.primary_repl_offset) {
+                best_replica = replica;
+                break;
+            }
+        }
+
+        if (best_replica) {
+            /* Send a CLUSTER FAILOVER FORCE to the best replica. */
+            const char *buf = "*3\r\n$7\r\nCLUSTER\r\n$8\r\nFAILOVER\r\n$5\r\nFORCE\r\n";
+            if (connWrite(best_replica->conn, buf, strlen(buf)) == (int)strlen(buf)) {
+                serverLog(LL_NOTICE, "Sending CLUSTER FAILOVER FORCE to replica %s succeeded.",
+                          replicationGetReplicaName(best_replica));
+            } else {
+                serverLog(LL_WARNING, "Failed to send CLUSTER FAILOVER FORCE to replica: %s", strerror(errno));
+            }
+        } else {
+            serverLog(LL_NOTICE, "Unable to find a replica to perform an auto failover on shutdown.");
+        }
+    }
+
     /* The error logs have been logged in the save function if the save fails. */
     serverLog(LL_NOTICE, "Saving the cluster configuration file before exiting.");
     clusterSaveConfig(1);
@@ -4596,6 +4625,7 @@ void clusterHandleReplicaFailover(void) {
         if (server.cluster->mf_end) {
             server.cluster->failover_auth_time = mstime();
             server.cluster->failover_auth_rank = 0;
+            server.cluster->failover_auth_count++;
             clusterDoBeforeSleep(CLUSTER_TODO_HANDLE_FAILOVER);
         }
         serverLog(LL_NOTICE,
@@ -6736,7 +6766,11 @@ int clusterCommandSpecial(client *c) {
             /* If this is a forced failover, we don't need to talk with our
              * primary to agree about the offset. We just failover taking over
              * it without coordination. */
-            serverLog(LL_NOTICE, "Forced failover user request accepted (user request from '%s').", client);
+            if (c == server.primary) {
+                serverLog(LL_NOTICE, "Forced failover primary request accepted (primary request from '%s').", client);
+            } else {
+                serverLog(LL_NOTICE, "Forced failover user request accepted (user request from '%s').", client);
+            }
             server.cluster->mf_can_start = 1;
             /* We can start a manual failover as soon as possible, setting a flag
              * here so that we don't need to waiting for the cron to kick in. */
