@@ -39,6 +39,7 @@
  * Uses script_lua.c to run the Lua code.
  */
 
+#include "engine.h"
 #include "functions.h"
 #include "script_lua.h"
 #include <lua.h>
@@ -545,8 +546,8 @@ int luaEngineInitEngine(void) {
         .free_function = luaEngineFreeFunction,
     };
 
-    return functionsRegisterEngine(LUA_ENGINE_NAME,
-                                   NULL,
-                                   lua_engine_ctx,
-                                   &lua_engine_methods);
+    return engineManagerRegisterEngine(LUA_ENGINE_NAME,
+                                       NULL,
+                                       lua_engine_ctx,
+                                       &lua_engine_methods);
 }

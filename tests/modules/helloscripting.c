@@ -261,7 +261,8 @@ static size_t engineFunctionMemoryOverhead(void *compiled_function) {
     return ValkeyModule_MallocSize(func->name);
 }
 
-static void engineFreeFunction(ValkeyModuleScriptingEngineCtx *engine_ctx, void *compiled_function) {
+static void engineFreeFunction(ValkeyModuleScriptingEngineCtx *engine_ctx,
+                               void *compiled_function) {
     VALKEYMODULE_NOT_USED(engine_ctx);
     HelloFunc *func = (HelloFunc *)compiled_function;
     ValkeyModule_Free(func->name);
@@ -332,7 +333,8 @@ callHelloLangFunction(ValkeyModuleCtx *module_ctx,
     ValkeyModule_ReplyWithLongLong(module_ctx, result);
 }
 
-int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx, ValkeyModuleString **argv,
+int ValkeyModule_OnLoad(ValkeyModuleCtx *ctx,
+                        ValkeyModuleString **argv,
                         int argc) {
     VALKEYMODULE_NOT_USED(argv);
     VALKEYMODULE_NOT_USED(argc);
