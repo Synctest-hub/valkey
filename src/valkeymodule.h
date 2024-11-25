@@ -782,6 +782,11 @@ typedef enum {
     VALKEYMODULE_ACL_LOG_CHANNEL   /* Channel authorization failure */
 } ValkeyModuleACLLogEntryReason;
 
+typedef enum {
+    VALKEYMODULE_FLAG_DEFAULT = 0,     /* Default behavior */
+    VALKEYMODULE_FLAG_SKIP_VALIDATION, /* Skip validation */
+} ValkeyModuleFlag;
+
 /* Incomplete structures needed by both the core and modules. */
 typedef struct ValkeyModuleIO ValkeyModuleIO;
 typedef struct ValkeyModuleDigest ValkeyModuleDigest;
@@ -1091,6 +1096,8 @@ VALKEYMODULE_API int (*ValkeyModule_StringToStreamID)(const ValkeyModuleString *
                                                       ValkeyModuleStreamID *id) VALKEYMODULE_ATTR;
 VALKEYMODULE_API void (*ValkeyModule_AutoMemory)(ValkeyModuleCtx *ctx) VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_Replicate)(ValkeyModuleCtx *ctx, const char *cmdname, const char *fmt, ...)
+    VALKEYMODULE_ATTR;
+VALKEYMODULE_API int (*ValkeyModule_ReplicateWithFlag)(ValkeyModuleCtx *ctx, ValkeyModuleFlag flag, const char *cmdname, const char *fmt, ...)
     VALKEYMODULE_ATTR;
 VALKEYMODULE_API int (*ValkeyModule_ReplicateVerbatim)(ValkeyModuleCtx *ctx) VALKEYMODULE_ATTR;
 VALKEYMODULE_API const char *(*ValkeyModule_CallReplyStringPtr)(ValkeyModuleCallReply *reply,
@@ -1750,6 +1757,7 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(StringPtrLen);
     VALKEYMODULE_GET_API(AutoMemory);
     VALKEYMODULE_GET_API(Replicate);
+    VALKEYMODULE_GET_API(ReplicateWithFlag);
     VALKEYMODULE_GET_API(ReplicateVerbatim);
     VALKEYMODULE_GET_API(DeleteKey);
     VALKEYMODULE_GET_API(UnlinkKey);
