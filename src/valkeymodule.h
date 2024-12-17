@@ -783,6 +783,7 @@ typedef enum {
 } ValkeyModuleACLLogEntryReason;
 
 /* Incomplete structures needed by both the core and modules. */
+typedef struct ValkeyModuleCtx ValkeyModuleCtx;
 typedef struct ValkeyModuleIO ValkeyModuleIO;
 typedef struct ValkeyModuleDigest ValkeyModuleDigest;
 typedef struct ValkeyModuleInfoCtx ValkeyModuleInfoCtx;
@@ -793,6 +794,134 @@ typedef struct ValkeyModuleDefragCtx ValkeyModuleDefragCtx;
 typedef void (*ValkeyModuleInfoFunc)(ValkeyModuleInfoCtx *ctx, int for_crash_report);
 typedef void (*ValkeyModuleDefragFunc)(ValkeyModuleDefragCtx *ctx);
 typedef void (*ValkeyModuleUserChangedFunc)(uint64_t client_id, void *privdata);
+
+/* Current ABI version for scripting engine modules. */
+#define VALKEYMODULE_SCRIPTING_ENGINE_ABI_VERSION 1UL
+
+/* Type definitions for implementing scripting engines modules. */
+typedef void ValkeyModuleScriptingEngineCtx;
+typedef void ValkeyModuleScriptingEngineFunctionCtx;
+
+/* This struct represents a scripting engine function that results from the
+ * compilation of a script by the engine implementation.
+ *
+ * IMPORTANT: If we ever need to add/remove fields from this struct, we need
+ * to bump the version number defined in the
+ * `VALKEYMODULE_SCRIPTING_ENGINE_ABI_VERSION` constant.
+ */
+typedef struct ValkeyModuleScriptingEngineCompiledFunction {
+    char *name;       /* Function name */
+    size_t name_len;  /* The length of the function name string */
+    void *function;   /* Opaque object representing a function, usually it'
+                         the function compiled code. */
+    char *desc;       /* Function description */
+    size_t desc_len;  /* The length of the description string */
+    uint64_t f_flags; /* Function flags */
+} ValkeyModuleScriptingEngineCompiledFunction;
+
+/* The callback function called when `FUNCTION LOAD` command is called to load
+ * a library of functions.
+ * This callback function evaluates the source code passed to `FUNCTION LOAD`
+ * and registers the functions declared in the source code.
+ *
+ * - `engine_ctx`: the engine specific context pointer.
+ *
+ * - `code`: string pointer to the source code.
+ *
+ * - `timeout`: timeout for the library creation (0 for no timeout).
+ *
+ * - `out_num_compiled_functions`: out param with the number of objects
+ *   returned by this function.
+ *
+ * - `err` - out param with the description of error (if occurred).
+ *
+ * Returns an array of compiled function objects, or `NULL` if some error
+ * occurred.
+ */
+typedef ValkeyModuleScriptingEngineCompiledFunction **(*ValkeyModuleScriptingEngineCreateFunctionsLibraryFunc)(
+    ValkeyModuleScriptingEngineCtx *engine_ctx,
+    const char *code,
+    size_t timeout,
+    size_t *out_num_compiled_functions,
+    char **err);
+
+/* The callback function called when `FCALL` command is called on a function
+ * registered in the scripting engine.
+ * This callback function executes the `compiled_function` code.
+ *
+ * - `module_ctx`: the module runtime context.
+ *
+ * - `engine_ctx`: the engine specific context pointer.
+ *
+ * - `func_ctx`: the context opaque structure that represents the runtime
+ *               context for the function.
+ *
+ * - `compiled_function`: pointer to the compiled function registered by the
+ *   engine.
+ *
+ * - `keys`: the array of key strings passed in the `FCALL` command.
+ *
+ * - `nkeys`: the number of elements present in the `keys` array.
+ *
+ * - `args`: the array of string arguments passed in the `FCALL` command.
+ *
+ * - `nargs`: the number of elements present in the `args` array.
+ */
+typedef void (*ValkeyModuleScriptingEngineCallFunctionFunc)(
+    ValkeyModuleCtx *module_ctx,
+    ValkeyModuleScriptingEngineCtx *engine_ctx,
+    ValkeyModuleScriptingEngineFunctionCtx *func_ctx,
+    void *compiled_function,
+    ValkeyModuleString **keys,
+    size_t nkeys,
+    ValkeyModuleString **args,
+    size_t nargs);
+
+/* Return the current used memory by the engine */
+typedef size_t (*ValkeyModuleScriptingEngineGetUsedMemoryFunc)(
+    ValkeyModuleScriptingEngineCtx *engine_ctx);
+
+/* Return memory overhead for a given function, such memory is not counted as
+ * engine memory but as general structs memory that hold different information
+ */
+typedef size_t (*ValkeyModuleScriptingEngineGetFunctionMemoryOverheadFunc)(
+    void *compiled_function);
+
+/* Return memory overhead for engine (struct size holding the engine) */
+typedef size_t (*ValkeyModuleScriptingEngineGetEngineMemoryOverheadFunc)(
+    ValkeyModuleScriptingEngineCtx *engine_ctx);
+
+/* Free the given function */
+typedef void (*ValkeyModuleScriptingEngineFreeFunctionFunc)(
+    ValkeyModuleScriptingEngineCtx *engine_ctx,
+    void *compiled_function);
+
+typedef struct ValkeyModuleScriptingEngineMethodsV1 {
+    uint64_t version; /* Version of this structure for ABI compat. */
+
+    /* Library create function callback. When a new script is loaded, this
+     * callback will be called with the script code, and returns a list of
+     * ValkeyModuleScriptingEngineCompiledFunc objects. */
+    ValkeyModuleScriptingEngineCreateFunctionsLibraryFunc create_functions_library;
+
+    /* The callback function called when `FCALL` command is called on a function
+     * registered in this engine. */
+    ValkeyModuleScriptingEngineCallFunctionFunc call_function;
+
+    /* Function callback to get current used memory by the engine. */
+    ValkeyModuleScriptingEngineGetUsedMemoryFunc get_used_memory;
+
+    /* Function callback to return memory overhead for a given function. */
+    ValkeyModuleScriptingEngineGetFunctionMemoryOverheadFunc get_function_memory_overhead;
+
+    /* Function callback to return memory overhead of the engine. */
+    ValkeyModuleScriptingEngineGetEngineMemoryOverheadFunc get_engine_memory_overhead;
+
+    /* Function callback to free the memory of a registered engine function. */
+    ValkeyModuleScriptingEngineFreeFunctionFunc free_function;
+} ValkeyModuleScriptingEngineMethodsV1;
+
+#define ValkeyModuleScriptingEngineMethods ValkeyModuleScriptingEngineMethodsV1
 
 /* ------------------------- End of common defines ------------------------ */
 
@@ -826,7 +955,6 @@ typedef void (*ValkeyModuleUserChangedFunc)(uint64_t client_id, void *privdata);
 #endif
 
 /* Incomplete structures for compiler checks but opaque access. */
-typedef struct ValkeyModuleCtx ValkeyModuleCtx;
 typedef struct ValkeyModuleCommand ValkeyModuleCommand;
 typedef struct ValkeyModuleCallReply ValkeyModuleCallReply;
 typedef struct ValkeyModuleType ValkeyModuleType;
@@ -1650,6 +1778,14 @@ VALKEYMODULE_API int (*ValkeyModule_RdbSave)(ValkeyModuleCtx *ctx,
                                              ValkeyModuleRdbStream *stream,
                                              int flags) VALKEYMODULE_ATTR;
 
+VALKEYMODULE_API int (*ValkeyModule_RegisterScriptingEngine)(ValkeyModuleCtx *ctx,
+                                                             const char *engine_name,
+                                                             ValkeyModuleScriptingEngineCtx *engine_ctx,
+                                                             ValkeyModuleScriptingEngineMethods *engine_methods) VALKEYMODULE_ATTR;
+
+VALKEYMODULE_API int (*ValkeyModule_UnregisterScriptingEngine)(ValkeyModuleCtx *ctx,
+                                                               const char *engine_name) VALKEYMODULE_ATTR;
+
 #define ValkeyModule_IsAOFClient(id) ((id) == UINT64_MAX)
 
 /* This is included inline inside each Valkey module. */
@@ -2017,6 +2153,8 @@ static int ValkeyModule_Init(ValkeyModuleCtx *ctx, const char *name, int ver, in
     VALKEYMODULE_GET_API(RdbStreamFree);
     VALKEYMODULE_GET_API(RdbLoad);
     VALKEYMODULE_GET_API(RdbSave);
+    VALKEYMODULE_GET_API(RegisterScriptingEngine);
+    VALKEYMODULE_GET_API(UnregisterScriptingEngine);
 
     if (ValkeyModule_IsModuleNameBusy && ValkeyModule_IsModuleNameBusy(name)) return VALKEYMODULE_ERR;
     ValkeyModule_SetModuleAttribs(ctx, name, ver, apiver);

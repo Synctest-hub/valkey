@@ -39,6 +39,7 @@
  * Uses script_lua.c to run the Lua code.
  */
 
+#include "engine.h"
 #include "functions.h"
 #include "script_lua.h"
 #include <lua.h>
@@ -64,17 +65,13 @@ typedef struct luaFunctionCtx {
 } luaFunctionCtx;
 
 typedef struct loadCtx {
-    functionLibInfo *li;
+    list *functions;
     monotime start_time;
     size_t timeout;
 } loadCtx;
 
-typedef struct registerFunctionArgs {
-    sds name;
-    sds desc;
-    luaFunctionCtx *lua_f_ctx;
-    uint64_t f_flags;
-} registerFunctionArgs;
+static void luaEngineFreeFunction(engineCtx *engine_ctx,
+                                  void *compiled_function);
 
 /* Hook for FUNCTION LOAD execution.
  * Used to cancel the execution in case of a timeout (500ms).
@@ -93,15 +90,33 @@ static void luaEngineLoadHook(lua_State *lua, lua_Debug *ar) {
     }
 }
 
+static void freeCompiledFunc(luaEngineCtx *lua_engine_ctx, void *compiled_func) {
+    compiledFunction *func = compiled_func;
+    zfree(func->name);
+    if (func->desc) {
+        zfree(func->desc);
+    }
+    luaEngineFreeFunction(lua_engine_ctx, func->function);
+    zfree(func);
+}
+
 /*
- * Compile a given blob and save it on the registry.
- * Return a function ctx with Lua ref that allows to later retrieve the
- * function from the registry.
+ * Compile a given script code by generating a set of compiled functions. These
+ * functions are also saved into the the registry of the Lua environment.
+ *
+ * Returns an array of compiled functions. The `compileFunction` struct stores a
+ * Lua ref that allows to later retrieve the function from the registry.
+ * In the `out_num_compiled_functions` parameter is returned the size of the
+ * array.
  *
  * Return NULL on compilation error and set the error to the err variable
  */
-static int luaEngineCreate(void *engine_ctx, functionLibInfo *li, sds blob, size_t timeout, sds *err) {
-    int ret = C_ERR;
+static compiledFunction **luaEngineCreate(engineCtx *engine_ctx,
+                                          const char *code,
+                                          size_t timeout,
+                                          size_t *out_num_compiled_functions,
+                                          char **err) {
+    compiledFunction **compiled_functions = NULL;
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
 
@@ -114,15 +129,15 @@ static int luaEngineCreate(void *engine_ctx, functionLibInfo *li, sds blob, size
     lua_pop(lua, 1);                                   /* pop the metatable */
 
     /* compile the code */
-    if (luaL_loadbuffer(lua, blob, sdslen(blob), "@user_function")) {
-        *err = sdscatprintf(sdsempty(), "Error compiling function: %s", lua_tostring(lua, -1));
+    if (luaL_loadbuffer(lua, code, strlen(code), "@user_function")) {
+        *err = valkey_asprintf("Error compiling function: %s", lua_tostring(lua, -1));
         lua_pop(lua, 1); /* pops the error */
         goto done;
     }
     serverAssert(lua_isfunction(lua, -1));
 
     loadCtx load_ctx = {
-        .li = li,
+        .functions = listCreate(),
         .start_time = getMonotonicUs(),
         .timeout = timeout,
     };
@@ -133,13 +148,31 @@ static int luaEngineCreate(void *engine_ctx, functionLibInfo *li, sds blob, size
     if (lua_pcall(lua, 0, 0, 0)) {
         errorInfo err_info = {0};
         luaExtractErrorInformation(lua, &err_info);
-        *err = sdscatprintf(sdsempty(), "Error registering functions: %s", err_info.msg);
+        *err = valkey_asprintf("Error registering functions: %s", err_info.msg);
         lua_pop(lua, 1); /* pops the error */
         luaErrorInformationDiscard(&err_info);
+        listIter *iter = listGetIterator(load_ctx.functions, AL_START_HEAD);
+        listNode *node = NULL;
+        while ((node = listNext(iter)) != NULL) {
+            freeCompiledFunc(lua_engine_ctx, listNodeValue(node));
+        }
+        listReleaseIterator(iter);
+        listRelease(load_ctx.functions);
         goto done;
     }
 
-    ret = C_OK;
+    compiled_functions =
+        zcalloc(sizeof(compiledFunction *) * listLength(load_ctx.functions));
+    listIter *iter = listGetIterator(load_ctx.functions, AL_START_HEAD);
+    listNode *node = NULL;
+    *out_num_compiled_functions = 0;
+    while ((node = listNext(iter)) != NULL) {
+        compiledFunction *func = listNodeValue(node);
+        compiled_functions[*out_num_compiled_functions] = func;
+        (*out_num_compiled_functions)++;
+    }
+    listReleaseIterator(iter);
+    listRelease(load_ctx.functions);
 
 done:
     /* restore original globals */
@@ -152,19 +185,22 @@ done:
 
     lua_sethook(lua, NULL, 0, 0); /* Disable hook */
     luaSaveOnRegistry(lua, REGISTRY_LOAD_CTX_NAME, NULL);
-    return ret;
+    return compiled_functions;
 }
 
 /*
  * Invole the give function with the given keys and args
  */
-static void luaEngineCall(scriptRunCtx *run_ctx,
-                          void *engine_ctx,
+static void luaEngineCall(ValkeyModuleCtx *module_ctx,
+                          engineCtx *engine_ctx,
+                          functionCtx *func_ctx,
                           void *compiled_function,
                           robj **keys,
                           size_t nkeys,
                           robj **args,
                           size_t nargs) {
+    serverAssert(module_ctx == NULL);
+
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
     luaFunctionCtx *f_ctx = compiled_function;
@@ -177,11 +213,12 @@ static void luaEngineCall(scriptRunCtx *run_ctx,
 
     serverAssert(lua_isfunction(lua, -1));
 
+    scriptRunCtx *run_ctx = (scriptRunCtx *)func_ctx;
     luaCallFunction(run_ctx, lua, keys, nkeys, args, nargs, 0);
     lua_pop(lua, 1); /* Pop error handler */
 }
 
-static size_t luaEngineGetUsedMemoy(void *engine_ctx) {
+static size_t luaEngineGetUsedMemoy(engineCtx *engine_ctx) {
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     return luaMemory(lua_engine_ctx->lua);
 }
@@ -190,12 +227,13 @@ static size_t luaEngineFunctionMemoryOverhead(void *compiled_function) {
     return zmalloc_size(compiled_function);
 }
 
-static size_t luaEngineMemoryOverhead(void *engine_ctx) {
+static size_t luaEngineMemoryOverhead(engineCtx *engine_ctx) {
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     return zmalloc_size(lua_engine_ctx);
 }
 
-static void luaEngineFreeFunction(void *engine_ctx, void *compiled_function) {
+static void luaEngineFreeFunction(engineCtx *engine_ctx,
+                                  void *compiled_function) {
     luaEngineCtx *lua_engine_ctx = engine_ctx;
     lua_State *lua = lua_engine_ctx->lua;
     luaFunctionCtx *f_ctx = compiled_function;
@@ -203,24 +241,21 @@ static void luaEngineFreeFunction(void *engine_ctx, void *compiled_function) {
     zfree(f_ctx);
 }
 
-static void luaRegisterFunctionArgsInitialize(registerFunctionArgs *register_f_args,
-                                              sds name,
-                                              sds desc,
+static void luaRegisterFunctionArgsInitialize(compiledFunction *func,
+                                              char *name,
+                                              size_t name_len,
+                                              char *desc,
+                                              size_t desc_len,
                                               luaFunctionCtx *lua_f_ctx,
                                               uint64_t flags) {
-    *register_f_args = (registerFunctionArgs){
+    *func = (compiledFunction){
         .name = name,
+        .name_len = name_len,
         .desc = desc,
-        .lua_f_ctx = lua_f_ctx,
+        .desc_len = desc_len,
+        .function = lua_f_ctx,
         .f_flags = flags,
     };
-}
-
-static void luaRegisterFunctionArgsDispose(lua_State *lua, registerFunctionArgs *register_f_args) {
-    sdsfree(register_f_args->name);
-    if (register_f_args->desc) sdsfree(register_f_args->desc);
-    lua_unref(lua, register_f_args->lua_f_ctx->lua_function_ref);
-    zfree(register_f_args->lua_f_ctx);
 }
 
 /* Read function flags located on the top of the Lua stack.
@@ -267,10 +302,13 @@ done:
     return ret;
 }
 
-static int luaRegisterFunctionReadNamedArgs(lua_State *lua, registerFunctionArgs *register_f_args) {
+static int luaRegisterFunctionReadNamedArgs(lua_State *lua,
+                                            compiledFunction *func) {
     char *err = NULL;
-    sds name = NULL;
-    sds desc = NULL;
+    char *name = NULL;
+    size_t name_len = 0;
+    char *desc = NULL;
+    size_t desc_len = 0;
     luaFunctionCtx *lua_f_ctx = NULL;
     uint64_t flags = 0;
     if (!lua_istable(lua, 1)) {
@@ -287,14 +325,15 @@ static int luaRegisterFunctionReadNamedArgs(lua_State *lua, registerFunctionArgs
             err = "named argument key given to server.register_function is not a string";
             goto error;
         }
+
         const char *key = lua_tostring(lua, -2);
         if (!strcasecmp(key, "function_name")) {
-            if (!(name = luaGetStringSds(lua, -1))) {
+            if (!(name = luaGetStringCStr(lua, -1, &name_len))) {
                 err = "function_name argument given to server.register_function must be a string";
                 goto error;
             }
         } else if (!strcasecmp(key, "description")) {
-            if (!(desc = luaGetStringSds(lua, -1))) {
+            if (!(desc = luaGetStringCStr(lua, -1, &desc_len))) {
                 err = "description argument given to server.register_function must be a string";
                 goto error;
             }
@@ -335,13 +374,19 @@ static int luaRegisterFunctionReadNamedArgs(lua_State *lua, registerFunctionArgs
         goto error;
     }
 
-    luaRegisterFunctionArgsInitialize(register_f_args, name, desc, lua_f_ctx, flags);
+    luaRegisterFunctionArgsInitialize(func,
+                                      name,
+                                      name_len,
+                                      desc,
+                                      desc_len,
+                                      lua_f_ctx,
+                                      flags);
 
     return C_OK;
 
 error:
-    if (name) sdsfree(name);
-    if (desc) sdsfree(desc);
+    if (name) zfree(name);
+    if (desc) zfree(desc);
     if (lua_f_ctx) {
         lua_unref(lua, lua_f_ctx->lua_function_ref);
         zfree(lua_f_ctx);
@@ -350,11 +395,13 @@ error:
     return C_ERR;
 }
 
-static int luaRegisterFunctionReadPositionalArgs(lua_State *lua, registerFunctionArgs *register_f_args) {
+static int luaRegisterFunctionReadPositionalArgs(lua_State *lua,
+                                                 compiledFunction *func) {
     char *err = NULL;
-    sds name = NULL;
+    char *name = NULL;
+    size_t name_len = 0;
     luaFunctionCtx *lua_f_ctx = NULL;
-    if (!(name = luaGetStringSds(lua, 1))) {
+    if (!(name = luaGetStringCStr(lua, 1, &name_len))) {
         err = "first argument to server.register_function must be a string";
         goto error;
     }
@@ -369,17 +416,17 @@ static int luaRegisterFunctionReadPositionalArgs(lua_State *lua, registerFunctio
     lua_f_ctx = zmalloc(sizeof(*lua_f_ctx));
     lua_f_ctx->lua_function_ref = lua_function_ref;
 
-    luaRegisterFunctionArgsInitialize(register_f_args, name, NULL, lua_f_ctx, 0);
+    luaRegisterFunctionArgsInitialize(func, name, name_len, NULL, 0, lua_f_ctx, 0);
 
     return C_OK;
 
 error:
-    if (name) sdsfree(name);
+    if (name) zfree(name);
     luaPushError(lua, err);
     return C_ERR;
 }
 
-static int luaRegisterFunctionReadArgs(lua_State *lua, registerFunctionArgs *register_f_args) {
+static int luaRegisterFunctionReadArgs(lua_State *lua, compiledFunction *func) {
     int argc = lua_gettop(lua);
     if (argc < 1 || argc > 2) {
         luaPushError(lua, "wrong number of arguments to server.register_function");
@@ -387,33 +434,28 @@ static int luaRegisterFunctionReadArgs(lua_State *lua, registerFunctionArgs *reg
     }
 
     if (argc == 1) {
-        return luaRegisterFunctionReadNamedArgs(lua, register_f_args);
+        return luaRegisterFunctionReadNamedArgs(lua, func);
     } else {
-        return luaRegisterFunctionReadPositionalArgs(lua, register_f_args);
+        return luaRegisterFunctionReadPositionalArgs(lua, func);
     }
 }
 
 static int luaRegisterFunction(lua_State *lua) {
-    registerFunctionArgs register_f_args = {0};
+    compiledFunction *func = zcalloc(sizeof(*func));
 
     loadCtx *load_ctx = luaGetFromRegistry(lua, REGISTRY_LOAD_CTX_NAME);
     if (!load_ctx) {
+        zfree(func);
         luaPushError(lua, "server.register_function can only be called on FUNCTION LOAD command");
         return luaError(lua);
     }
 
-    if (luaRegisterFunctionReadArgs(lua, &register_f_args) != C_OK) {
+    if (luaRegisterFunctionReadArgs(lua, func) != C_OK) {
+        zfree(func);
         return luaError(lua);
     }
 
-    sds err = NULL;
-    if (functionLibCreateFunction(register_f_args.name, register_f_args.lua_f_ctx, load_ctx->li, register_f_args.desc,
-                                  register_f_args.f_flags, &err) != C_OK) {
-        luaRegisterFunctionArgsDispose(lua, &register_f_args);
-        luaPushError(lua, err);
-        sdsfree(err);
-        return luaError(lua);
-    }
+    listAddNodeTail(load_ctx->functions, func);
 
     return 0;
 }
@@ -494,16 +536,18 @@ int luaEngineInitEngine(void) {
     lua_enablereadonlytable(lua_engine_ctx->lua, -1, 1); /* protect the new global table */
     lua_replace(lua_engine_ctx->lua, LUA_GLOBALSINDEX);  /* set new global table as the new globals */
 
-
-    engine *lua_engine = zmalloc(sizeof(*lua_engine));
-    *lua_engine = (engine){
-        .engine_ctx = lua_engine_ctx,
-        .create = luaEngineCreate,
-        .call = luaEngineCall,
+    engineMethods lua_engine_methods = {
+        .version = VALKEYMODULE_SCRIPTING_ENGINE_ABI_VERSION,
+        .create_functions_library = luaEngineCreate,
+        .call_function = luaEngineCall,
         .get_used_memory = luaEngineGetUsedMemoy,
         .get_function_memory_overhead = luaEngineFunctionMemoryOverhead,
         .get_engine_memory_overhead = luaEngineMemoryOverhead,
         .free_function = luaEngineFreeFunction,
     };
-    return functionsRegisterEngine(LUA_ENGINE_NAME, lua_engine);
+
+    return engineManagerRegisterEngine(LUA_ENGINE_NAME,
+                                       NULL,
+                                       lua_engine_ctx,
+                                       &lua_engine_methods);
 }
