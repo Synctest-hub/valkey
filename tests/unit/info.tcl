@@ -403,7 +403,7 @@ start_server {tags {"info" "external:skip"}} {
             set info [r info stats]
             assert_equal [getInfoProperty $info client_output_buffer_limit_disconnections] {1}
             r config set client-output-buffer-limit $org_outbuf_limit
-        } {OK} {logreqres:skip} ;# same as obuf-limits.tcl, skip logreqres
+        } {OK} {logreqres:skip reply-offload:skip} ;# same as obuf-limits.tcl, skip logreqres
 
         test {clients: pubsub clients} {
             set info [r info clients]

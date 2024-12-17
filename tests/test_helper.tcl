@@ -55,6 +55,7 @@ set ::valgrind 0
 set ::durable 0
 set ::tls 0
 set ::io_threads 0
+set ::reply_offload 0
 set ::tls_module 0
 set ::stack_logging 0
 set ::verbose 0
@@ -596,6 +597,7 @@ proc print_help_screen {} {
         "--wait-server      Wait after server is started (so that you can attach a debugger)."
         "--dump-logs        Dump server log on test failure."
         "--io-threads       Run tests with IO threads."
+        "--reply-offload    Run tests with reply offload enabled."
         "--tls              Run tests in TLS mode."
         "--tls-module       Run tests in TLS mode with Valkey module."
         "--host <addr>      Run tests against an external host."
@@ -656,6 +658,8 @@ for {set j 0} {$j < [llength $argv]} {incr j} {
         set ::quiet 1
     } elseif {$opt eq {--io-threads}} {
         set ::io_threads 1
+    } elseif {$opt eq {--reply-offload}} {
+        set ::reply_offload 1
     } elseif {$opt eq {--tls} || $opt eq {--tls-module}} {
         package require tls 1.6
         set ::tls 1
