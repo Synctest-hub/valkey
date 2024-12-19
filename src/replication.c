@@ -888,6 +888,7 @@ int primaryTryPartialResynchronization(client *c, long long psync_offset) {
      * 4) Send the backlog data (from the offset to the end) to the replica. */
     waitForClientIO(c);
     c->flag.replica = 1;
+    c->flag.reply_offload = 0;
     if (c->associated_rdb_client_id && lookupRdbClientByID(c->associated_rdb_client_id)) {
         c->repl_state = REPLICA_STATE_BG_RDB_LOAD;
         removeReplicaFromPsyncWait(c);
@@ -1151,6 +1152,7 @@ void syncCommand(client *c) {
     /* Wait for any IO pending operation to finish before changing the client state */
     waitForClientIO(c);
     c->flag.replica = 1;
+    c->flag.reply_offload = 0;
     listAddNodeTail(server.replicas, c);
 
     /* Create the replication backlog if needed. */
@@ -4148,8 +4150,11 @@ void replicationCachePrimary(client *c) {
     server.primary->repl_applied = 0;
     server.primary->read_reploff = server.primary->reploff;
     if (c->flag.multi) discardTransaction(c);
+    if (c->flag.reply_offload) {
+        releaseReplyOffloads(c);
+        resetLastWrittenBuf(c);
+    }
     listEmpty(c->reply);
-    c->sentlen = 0;
     c->reply_bytes = 0;
     c->bufpos = 0;
     resetClient(c);
