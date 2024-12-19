@@ -1273,6 +1273,9 @@ void syncCommand(client *c) {
  * - rdb-channel <1|0>
  * Used to identify the client as a replica's rdb connection in an dual channel
  * sync session.
+ *
+ * - repl-diskless-load <1|0>
+ * Replica is capable of load data from replication stream, request to skip checksum.
  * */
 void replconfCommand(client *c) {
     int j;
@@ -1303,6 +1306,13 @@ void replconfCommand(client *c) {
                                     sdslen(addr));
                 return;
             }
+        } else if (!strcasecmp(c->argv[j]->ptr, "repl-diskless-load")) {
+            /* REPLCONF repl-diskless-load is used to identify the client is capable of
+             * load directly without creating rdb file */
+            long rdb_diskless_load = 0;
+            if (getRangeLongFromObjectOrReply(c, c->argv[j + 1], 0, 1, &rdb_diskless_load, NULL) != C_OK) return;
+            if (rdb_diskless_load == 1)
+                c->replica_req |= REPLICA_REQ_CHKSUM_SKIP;
         } else if (!strcasecmp(c->argv[j]->ptr, "capa")) {
             /* Ignore capabilities not understood by this primary. */
             if (!strcasecmp(c->argv[j + 1]->ptr, "eof"))
@@ -2629,7 +2639,7 @@ static int dualChannelReplHandleHandshake(connection *conn, sds *err) {
     /* Send replica listening port to primary for clarification */
     sds portstr = getReplicaPortString();
     *err = sendCommand(conn, "REPLCONF", "capa", "eof", "rdb-only", "1", "rdb-channel", "1", "listening-port", portstr,
-                       NULL);
+                       "repl-diskless-load", useDisklessLoad() ? "1" : "0", NULL);
     sdsfree(portstr);
     if (*err) {
         dualChannelServerLog(LL_WARNING, "Sending command to primary in dual channel replication handshake: %s", *err);
@@ -3519,6 +3529,12 @@ void syncWithPrimary(connection *conn) {
                           server.dual_channel_replication ? "capa" : NULL,
                           server.dual_channel_replication ? "dual-channel" : NULL, NULL);
         if (err) goto write_error;
+
+        /* Inform the primary of replicas repl-diskless-load config. */
+        if (useDisklessLoad()) {
+            err = sendCommand(conn, "REPLCONF", "repl-diskless-load", "1", NULL);
+            if (err) goto write_error;
+        }
 
         /* Inform the primary of our (replica) version. */
         err = sendCommand(conn, "REPLCONF", "version", VALKEY_VERSION, NULL);
