@@ -121,7 +121,7 @@ static void prefetchEntry(KeyPrefetchInfo *info) {
         moveToNextKey();
         /* If reply offload enabled no need to prefetch value because main thread will not access it */
     } else if (server.reply_offload_enabled) {
-         markKeyAsdone(info);
+        markKeyAsdone(info);
     } else {
         info->state = PREFETCH_VALUE;
     }

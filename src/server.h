@@ -924,7 +924,7 @@ typedef struct payloadHeader payloadHeader; /* Defined in networking.c */
  * which is actually a linked list of blocks like that, that is: client->reply. */
 typedef struct clientReplyBlock {
     size_t size, used;
-    payloadHeader* last_header;
+    payloadHeader *last_header;
     char buf[];
 } clientReplyBlock;
 
@@ -1291,7 +1291,7 @@ typedef struct client {
     list *reply;                         /* List of reply objects to send to the client. */
     listNode *io_last_reply_block;       /* Last client reply block when sent to IO thread */
     size_t io_last_bufpos;               /* The client's bufpos at the time it was sent to the IO thread */
-    char* io_last_written_buf;           /* Last buffer that has been written to the client connection */
+    char *io_last_written_buf;           /* Last buffer that has been written to the client connection */
     size_t io_last_written_bufpos;       /* The buffer has been written until this position */
     size_t io_last_written_data_len;     /* The actual length of the data written from this buffer
                                             This length differs from written bufpos in case of reply offload */
@@ -1384,8 +1384,8 @@ typedef struct client {
     size_t buf_peak;                   /* Peak used size of buffer in last 5 sec interval. */
     mstime_t buf_peak_last_reset_time; /* keeps the last time the buffer peak value was reset */
     size_t bufpos;
-    payloadHeader* last_header;        /* Pointer to the last header in a buffer in reply offload mode */
-    size_t buf_usable_size; /* Usable size of buffer. */
+    payloadHeader *last_header; /* Pointer to the last header in a buffer in reply offload mode */
+    size_t buf_usable_size;     /* Usable size of buffer. */
     char *buf;
 #ifdef LOG_REQ_RES
     clientReqResInfo reqres;

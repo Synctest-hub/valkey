@@ -339,6 +339,6 @@ void clusterSlotStatsCommand(client *c) {
 }
 
 int clusterSlotStatsEnabled(void) {
-        return server.cluster_slot_stats_enabled &&  /* Config should be enabled. */
-               server.cluster_enabled;               /* Cluster mode should be enabled. */
+    return server.cluster_slot_stats_enabled && /* Config should be enabled. */
+           server.cluster_enabled;              /* Cluster mode should be enabled. */
 }
