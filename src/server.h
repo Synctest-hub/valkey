@@ -2126,6 +2126,7 @@ struct valkeyServer {
     /* Limits */
     unsigned int maxclients;                    /* Max number of simultaneous clients */
     unsigned long long maxmemory;               /* Max number of memory bytes to use */
+    unsigned long long key_eviction_memory;     /* Memory bytes to begin the key eviction process */
     ssize_t maxmemory_clients;                  /* Memory limit for total client buffers */
     int maxmemory_policy;                       /* Policy for key eviction */
     int maxmemory_samples;                      /* Precision of random sampling */
@@ -3063,6 +3064,9 @@ int collateStringObjects(const robj *a, const robj *b);
 int equalStringObjects(robj *a, robj *b);
 unsigned long long estimateObjectIdleTime(robj *o);
 void trimStringObjectIfNeeded(robj *o, int trim_small_values);
+static inline int canUseSharedObject(void) {
+    return server.maxmemory == 0 || !(server.maxmemory_policy & MAXMEMORY_FLAG_NO_SHARED_INTEGERS);
+}
 #define sdsEncodedObject(objptr) (objptr->encoding == OBJ_ENCODING_RAW || objptr->encoding == OBJ_ENCODING_EMBSTR)
 
 /* Objects with key attached, AKA valkey (val+key) objects */
@@ -3312,7 +3316,7 @@ int zslLexValueGteMin(sds value, zlexrangespec *spec);
 int zslLexValueLteMax(sds value, zlexrangespec *spec);
 
 /* Core functions */
-int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *level);
+int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *level, unsigned long long maxmemory);
 size_t freeMemoryGetNotCountedMemory(void);
 int overMaxmemoryAfterAlloc(size_t moremem);
 uint64_t getCommandFlags(client *c);
