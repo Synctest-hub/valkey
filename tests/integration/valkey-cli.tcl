@@ -608,6 +608,71 @@ if {!$::tls} { ;# fake_redis_node doesn't support TLS
         assert_equal "a\n1\nb\n2\nc\n3" [exec {*}$cmdline ZRANGE new_zset 0 -1 WITHSCORES]
     }
 
+    test {valkey-cli pubsub mode with multiple subscription types} {
+        set fd [open_cli]
+        
+        write_cli $fd "SUBSCRIBE channel1 channel2 channel3"
+        set response [read_cli $fd]
+
+        foreach line [split $response "\n"] {
+            if {[string match "*subscribe*channel1*" $line]} {
+                assert_match "*subscribe*channel1*" $line
+            } elseif {[string match "*subscribe*channel2*" $line]} {
+                assert_match "*subscribe*channel2*" $line
+            } elseif {[string match "*subscribe*channel3*" $line]} {
+                assert_match "*subscribe*channel3*" $line
+            }
+        }
+        
+        write_cli $fd "PSUBSCRIBE pattern*"
+        assert_match "*psubscribe*pattern**" [read_cli $fd]
+
+        write_cli $fd "SSUBSCRIBE schannel1"
+        assert_match "*ssubscribe*schannel1*" [read_cli $fd]
+
+        write_cli $fd "UNSUBSCRIBE channel1"
+        assert_match "*unsubscribe*channel1*" [read_cli $fd]
+
+        # Verify still in pubsub mode
+        catch {run_command $fd "SET key value"} err
+        assert_match "*ERR*only*SUBSCRIBE*UNSUBSCRIBE*allowed*" $err
+
+        write_cli $fd "PUNSUBSCRIBE pattern*"
+        assert_match "*punsubscribe*pattern**" [read_cli $fd]
+
+        # Verify still in pubsub mode
+        catch {run_command $fd "GET key"} err
+        assert_match "*ERR*only*SUBSCRIBE*UNSUBSCRIBE*allowed*" $err
+
+        write_cli $fd "SUNSUBSCRIBE schannel1"
+        assert_match "*sunsubscribe*schannel1*" [read_cli $fd]
+
+        catch {run_command $fd "INCR counter"} err
+        assert_match "*ERR*only*SUBSCRIBE*UNSUBSCRIBE*allowed*" $err
+
+        # Unsubscribe from all remaining channels
+        write_cli $fd "UNSUBSCRIBE"
+
+        set combined_response [read_cli $fd]
+
+        foreach line [split $combined_response "\n"] {
+            if {[string match "*unsubscribe*channel2*" $line]} {
+                assert_match "*unsubscribe*channel2*" $line
+            } elseif {[string match "*unsubscribe*channel3*" $line]} {
+                assert_match "*unsubscribe*channel3*" $line
+            }
+        }
+
+        # Verify that we've exited pubsub mode
+        set response [run_command $fd "PING"]
+        
+        if {[string first "(subscribed mode)" $response] >= 0} {
+            return -code error "Client is still in pubsub mode"
+        }
+        
+        close_cli $fd
+    }
+
     test "Valid Connection Scheme: redis://" {
         set cmdline [valkeycliuri "redis://" [srv host] [srv port]]
         assert_equal {PONG} [exec {*}$cmdline PING]

@@ -218,6 +218,8 @@ static struct config {
     int shutdown;
     int monitor_mode;
     int pubsub_mode;
+    int pubsub_unsharded_count; /* channels and patterns */
+    int pubsub_sharded_count;   /* shard channels */
     int blocking_state_aborted; /* used to abort monitor_mode and pubsub_mode. */
     int latency_mode;
     int latency_dist_mode;
@@ -2224,6 +2226,7 @@ static int cliReadReply(int output_raw_strings) {
         fflush(stdout);
         sdsfree(out);
     }
+
     return REDIS_OK;
 }
 
@@ -2395,6 +2398,34 @@ static int cliSendCommand(int argc, char **argv, long repeat) {
             fflush(stdout);
             if (config.pubsub_mode || num_expected_pubsub_push > 0) {
                 if (isPubsubPush(config.last_reply)) {
+
+                    /* Handle pubsub mode */
+                    if (config.last_reply->elements >= 3) {
+                        char *cmd = config.last_reply->element[0]->str;
+                        int count = config.last_reply->element[2]->integer;
+
+                        if (strcmp(cmd, "subscribe") == 0) {
+                            config.pubsub_unsharded_count++;
+                        } else if (strcmp(cmd, "unsubscribe") == 0) {
+                            config.pubsub_unsharded_count = count;
+                        } else if (strcmp(cmd, "psubscribe") == 0) {
+                            config.pubsub_unsharded_count++;
+                        } else if (strcmp(cmd, "punsubscribe") == 0) {
+                            config.pubsub_unsharded_count = count;
+                        } else if (strcmp(cmd, "ssubscribe") == 0) {
+                            config.pubsub_sharded_count++;
+                        } else if (strcmp(cmd, "sunsubscribe") == 0) {
+                            config.pubsub_sharded_count = count;
+                        }
+
+                        if (config.pubsub_unsharded_count == 0 && config.pubsub_sharded_count == 0) {
+                            config.pubsub_mode = 0;
+                            cliRefreshPrompt();
+                        } else {
+                            config.pubsub_mode = 1;
+                        }
+                    }
+
                     if (num_expected_pubsub_push > 0 && !strcasecmp(config.last_reply->element[0]->str, command)) {
                         /* This pushed message confirms the
                          * [p|s][un]subscribe command. */
@@ -2402,6 +2433,7 @@ static int cliSendCommand(int argc, char **argv, long repeat) {
                             config.pubsub_mode = 1;
                             cliRefreshPrompt();
                         }
+
                         if (--num_expected_pubsub_push > 0) {
                             continue; /* We need more of these. */
                         }
@@ -9493,6 +9525,8 @@ int main(int argc, char **argv) {
     config.shutdown = 0;
     config.monitor_mode = 0;
     config.pubsub_mode = 0;
+    config.pubsub_unsharded_count = 0;
+    config.pubsub_sharded_count = 0;
     config.blocking_state_aborted = 0;
     config.latency_mode = 0;
     config.latency_dist_mode = 0;
