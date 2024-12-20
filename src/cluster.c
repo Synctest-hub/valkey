@@ -1471,12 +1471,20 @@ void askingCommand(client *c) {
  * In this mode replica will not redirect clients as long as clients access
  * with read-only commands to keys that are served by the replica's primary. */
 void readonlyCommand(client *c) {
+    if (server.cluster_enabled == 0 && !(c->capa & CLIENT_CAPA_REDIRECT)) {
+        addReplyError(c, "Redirects are not enabled");
+        return;
+    }
     c->flag.readonly = 1;
     addReply(c, shared.ok);
 }
 
 /* The READWRITE command just clears the READONLY command state. */
 void readwriteCommand(client *c) {
+    if (server.cluster_enabled == 0 && !(c->capa & CLIENT_CAPA_REDIRECT)) {
+        addReplyError(c, "Redirects are not enabled");
+        return;
+    }
     c->flag.readonly = 0;
     addReply(c, shared.ok);
 }
